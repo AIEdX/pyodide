@@ -19,6 +19,12 @@ substitutions:
   error, it will return an empty list instead of raising a `SyntaxError`.
   {pr}`1819`
 
+- {{Enhancement}} Added a {ref}`pyodide.http.pyfetch` API which provides a
+  convenience wrapper for the Javascript `fetch` API. The API returns a response
+  object with various methods that convert the data into various types while
+  minimizing the number of times the data is copied.
+  {pr}`1865`
+
 ### JavaScript package
 
 - {{Fix}} {any}`loadPyodide <globalThis.loadPyodide>` no longer fails in the
@@ -32,9 +38,22 @@ substitutions:
   arguments and return values are automatically destroyed when the function is
   finished. {pr}`1573`
 
+- {{Enhancement}} Added {any}`JsProxy.to_string`, {any}`JsProxy.to_bytes`, and
+  {any}`JsProxy.to_memoryview` to allow for conversion of `TypedArray` to
+  standard Python types without unneeded copies. {pr}`1864`
+
 - {{Fix}} It is now possible to destroy borrowed attribute `PyProxy` of a
   `PyProxy` (as introduced by {pr}`1636`) before destroying the root `PyProxy`.
   {pr}`1854`
+
+- {{Fix}} If `__iter__()` raises an error, it is now handled correctly by the
+  `PyProxy[Symbol.iterator()]` method.
+  {pr}`1871`
+
+- {{Fix}} Borrowed attribute `PyProxy`s are no longer destroyed when the root
+  `PyProxy` is garbage collected (because it was leaked). Doing so has no
+  benefit to nonleaky code and turns some leaky code into broken code (see
+  {issue}`1855` for an example). {pr}`1870`
 
 ### pyodide-build
 
@@ -64,6 +83,10 @@ substitutions:
   20% size reduction on average for packages that vendor tests (e.g. numpy,
   pandas, scipy).
   {pr}`1832`
+
+- {{ Fix }} The built-in pwd module of Python, which provides Unix specific
+  feature, is now unvendored.
+  {pr}`1883`
 
 ### Uncategorized
 

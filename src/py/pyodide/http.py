@@ -10,8 +10,12 @@ except ImportError:
 
 from ._core import IN_BROWSER
 
-if IN_BROWSER:
-    from js import fetch as _jsfetch, Object
+
+__all__ = [
+    "open_url",
+    "pyfetch",
+    "FetchResponse",
+]
 
 
 def open_url(url: str) -> StringIO:
@@ -156,10 +160,13 @@ async def pyfetch(url, **kwargs) -> FetchResponse:
 
     Parameters
     ----------
-    url URL to fetch. **kwargs Any keyword arguments are passed along as
+    url URL to fetch. \*\*kwargs Any keyword arguments are passed along as
         `optional parameters to the fetch API
         <https://developer.mozilla.org/en-US/docs/Web/API/fetch#parameters>`_.
     """
+    if IN_BROWSER:
+        from js import fetch as _jsfetch, Object
+
     return FetchResponse(
         url, await _jsfetch(url, to_js(kwargs, dict_converter=Object.fromEntries))
     )

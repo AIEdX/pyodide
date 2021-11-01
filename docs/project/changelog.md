@@ -19,7 +19,7 @@ substitutions:
   error, it will return an empty list instead of raising a `SyntaxError`.
   {pr}`1819`
 
-- {{Enhancement}} Added a {ref}`pyodide.http.pyfetch` API which provides a
+- {{Enhancement}} Added a {any}`pyodide.http.pyfetch` API which provides a
   convenience wrapper for the Javascript `fetch` API. The API returns a response
   object with various methods that convert the data into various types while
   minimizing the number of times the data is copied.
@@ -54,6 +54,13 @@ substitutions:
   `PyProxy` is garbage collected (because it was leaked). Doing so has no
   benefit to nonleaky code and turns some leaky code into broken code (see
   {issue}`1855` for an example). {pr}`1870`
+
+- {{Fix}} Improved the way that `pyodide.globals.get("builtin_name")` works.
+  Before we used `__main__.__dict__.update(builtins.__dict__)` which led to
+  several undesirable effects such as `__name__` being equal to `"builtins"`.
+  Now we use a proxy wrapper to replace `pyodide.globals.get` with a function
+  that looks up the name on `builtins` if lookup on `globals` fails.
+  {pr}`1905`
 
 ### pyodide-build
 
@@ -95,6 +102,10 @@ substitutions:
   `pyodide.checkInterrupt` function so Javascript code can opt to be
   interrupted.
   {pr}`1294`
+
+- {{Fix}} The `_` variable is now set by the Pyodide repl just like it is set in
+  the native Python repl.
+  {pr}`1904`
 
 ## Version 0.18.1
 
@@ -348,7 +359,7 @@ See the {ref}`0-17-0-release-notes` for more information.
   access, then the wrapper has `get`, `set`, `has`, and `delete` methods which do
   `obj[key]`, `obj[key] = val`, `key in obj` and `del obj[key]` respectively.
   {pr}`1175`
-- {{ API }} The {any}`pyodide.pyimport` function is deprecated in favor of using
+- {{ API }} The `pyodide.pyimport` function is deprecated in favor of using
   `pyodide.globals.get('key')`. {pr}`1367`
 - {{ API }} Added {any}`PyProxy.getBuffer` API to allow direct access to Python
   buffers as JavaScript TypedArrays.

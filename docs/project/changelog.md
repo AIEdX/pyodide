@@ -31,6 +31,10 @@ substitutions:
   presence of a user-defined global named `process`.
   {pr}`1849`
 
+- {{Fix}} Webpack building compatibility issues and a {any}`loadPyodide <globalThis.loadPyodide>`
+  runtime issue due to webpack are solved. 
+  {pr}`1900`  
+
 ### Python / JavaScript type conversions
 
 - {{Enhancement}} Updated the calling convention when a JavaScript function is
@@ -94,6 +98,8 @@ substitutions:
 - {{ Fix }} The built-in pwd module of Python, which provides Unix specific
   feature, is now unvendored.
   {pr}`1883`
+  
+- New packages: `logbook`
 
 ### Uncategorized
 
@@ -448,6 +454,8 @@ See the {ref}`0-17-0-release-notes` for more information.
   Pyodide to use instead of `languagePluginURL` and `languagePluginLoader`. The
   change is currently backwards compatible, but the old approach is deprecated.
   {pr}`1363`
+- `runPythonAsync` now accepts `globals` parameter.
+  {pr}`1914`
 
 ### micropip
 

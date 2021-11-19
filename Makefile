@@ -16,9 +16,9 @@ all: check \
 	build/pyodide.asm.js \
 	build/pyodide.js \
 	build/console.html \
-	build/test.data \
 	build/distutils.data \
 	build/packages.json \
+	build/test.data \
 	build/test.html \
 	build/webworker.js \
 	build/webworker_dev.js
@@ -39,33 +39,15 @@ build/pyodide.asm.js: \
 	src/core/pyproxy.o \
 	src/core/python2js_buffer.o \
 	src/core/python2js.o \
-	src/pystone.py \
-	src/_testcapi.py \
-	src/_testinternalcapi.py \
-	src/webbrowser.py \
-	$(CPYTHONLIB)/tzdata \
+	$(wildcard src/py/lib/*.py) \
 	$(wildcard src/py/pyodide/*.py) \
 	$(wildcard src/py/_pyodide/*.py) \
+	$(CPYTHONLIB)/tzdata \
 	$(CPYTHONLIB)
 	date +"[%F %T] Building pyodide.asm.js..."
 	[ -d build ] || mkdir build
-	$(CXX) -s EXPORT_NAME="'_createPyodideModule'" -o build/pyodide.asm.js $(filter %.o,$^) \
-		$(MAIN_MODULE_LDFLAGS) -s FORCE_FILESYSTEM=1 \
-		-lidbfs.js \
-		-lnodefs.js \
-		-lproxyfs.js \
-		-lworkerfs.js \
-		--preload-file $(CPYTHONLIB)@/lib/python$(PYMAJOR).$(PYMINOR) \
-		--preload-file src/webbrowser.py@/lib/python$(PYMAJOR).$(PYMINOR)/webbrowser.py \
-		--preload-file src/_testcapi.py@/lib/python$(PYMAJOR).$(PYMINOR)/_testcapi.py \
-		--preload-file src/_testinternalcapi.py@/lib/python$(PYMAJOR).$(PYMINOR)/_testinternalcapi.py \
-		--preload-file src/pystone.py@/lib/python$(PYMAJOR).$(PYMINOR)/pystone.py \
-		--preload-file src/py/pyodide@/lib/python$(PYMAJOR).$(PYMINOR)/site-packages/pyodide \
-		--preload-file src/py/_pyodide@/lib/python$(PYMAJOR).$(PYMINOR)/site-packages/_pyodide \
-		--exclude-file "*__pycache__*" \
-		--exclude-file "*/test/*" \
-		--exclude-file "*/tests/*" \
-		--exclude-file "*/distutils/*"
+	$(CXX) -o build/pyodide.asm.js $(filter %.o,$^) \
+		$(MAIN_MODULE_LDFLAGS)
    # Strip out C++ symbols which all start __Z.
    # There are 4821 of these and they have VERY VERY long names.
    # To show some stats on the symbols you can use the following:
@@ -126,13 +108,13 @@ docs/_build/html/console.html: src/templates/console.html
 
 
 .PHONY: build/webworker.js
-build/webworker.js: src/webworker.js
+build/webworker.js: src/templates/webworker.js
 	cp $< $@
 	sed -i -e 's#{{ PYODIDE_BASE_URL }}#$(PYODIDE_BASE_URL)#g' $@
 
 
 .PHONY: build/webworker_dev.js
-build/webworker_dev.js: src/webworker.js
+build/webworker_dev.js: src/templates/webworker.js
 	cp $< $@
 	sed -i -e 's#{{ PYODIDE_BASE_URL }}#./#g' $@
 
@@ -180,11 +162,13 @@ clean:
 	make -C packages clean
 	echo "The Emsdk, CPython are not cleaned. cd into those directories to do so."
 
-
-clean-all: clean
-	make -C emsdk clean
+clean-python: clean
 	make -C cpython clean
-	rm -fr cpython/build
+
+clean-all:
+	make -C emsdk clean
+	make -C cpython clean-all
+
 
 %.o: %.c $(CPYTHONLIB) $(wildcard src/core/*.h src/core/python2js_buffer.js)
 	$(CC) -o $@ -c $< $(MAIN_MODULE_CFLAGS) -Isrc/core/

@@ -34,8 +34,6 @@ def test_parse_package_subset():
         "c",
         "d",
     }
-    # "*" means select all packages
-    assert _parse_package_subset("*") == None
 
     assert _parse_package_subset("core") == {
         "pyparsing",
@@ -44,6 +42,7 @@ def test_parse_package_subset():
         "Jinja2",
         "micropip",
         "regex",
+        "fpcast-test",
     }
     # by default core packages are built
     assert _parse_package_subset(None) == _parse_package_subset("core")
@@ -55,6 +54,7 @@ def test_parse_package_subset():
         "Jinja2",
         "micropip",
         "regex",
+        "fpcast-test",
         "numpy",
         "scipy",
         "pandas",

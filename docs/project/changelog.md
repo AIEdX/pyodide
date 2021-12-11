@@ -18,9 +18,9 @@ substitutions:
 
 - {{Breaking}} Default working directory(home directory) inside Pyodide virtual
   file system has been changed from `/` to `/home/pyodide`. To get previous behavior, you can
-  - call `os.chdir("/")`  to change working directory
+  - call `os.chdir("/")` to change working directory
   - or call {any}`loadPyodide <globalThis.loadPyodide>` with the `homedir="/"` argument
-  {pr}`1936`
+    {pr}`1936`
 
 ### Python package
 
@@ -34,6 +34,10 @@ substitutions:
   minimizing the number of times the data is copied.
   {pr}`1865`
 
+- {{Enhancement}} Added an {any}`unpack_archive` API to the {any}`FetchResponse`
+  object which treats the response body as an archive and uses `shutil` to
+  unpack it. {pr}`1935`
+
 ### JavaScript package
 
 - {{Fix}} {any}`loadPyodide <globalThis.loadPyodide>` no longer fails in the
@@ -41,8 +45,14 @@ substitutions:
   {pr}`1849`
 
 - {{Fix}} Webpack building compatibility issues and a {any}`loadPyodide <globalThis.loadPyodide>`
-  runtime issue due to webpack are solved. 
+  runtime issue due to webpack are solved.
   {pr}`1900`
+
+- {{Enhancement}} Added a {any}`pyodide.pyimport` API to import a Python module
+  and return it as a `PyProxy`. Note that this does a different thing than the
+  original `pyimport` API: it imports a package and returns it without adding
+  the package to the global scope.
+  {pr}`1944`
 
 - {{API}} {any}`loadPyodide <globalThis.loadPyodide>` now accepts `homedir`
   parameter which sets home directory of Pyodide virtual file system.
@@ -108,6 +118,15 @@ substitutions:
 - {{Fix}} micropip now raises error when installing non-pure python wheel directly from url.
   {pr}`1859`
 
+- {{Enhancement}} {func}`micropip.install` now accepts a `keep_going` parameter. If set to True,
+  micropip reports all identifiable dependencies that don't have pure Python wheels, instead of
+  failing after processing the first one.
+  {pr}`1976`
+
+- {{Enhancement}} Added a new API {func}`micropip.list` which returns the list of installed
+  packages by micropip.
+  {pr}`2012`
+
 ### packages
 
 - {{ Enhancement }} Unit tests are now unvendored from Python packages and
@@ -119,6 +138,13 @@ substitutions:
 - {{ Fix }} The built-in pwd module of Python, which provides Unix specific
   feature, is now unvendored.
   {pr}`1883`
+
+- {{Fix}} pillow and imageio now correctly encodes/decodes grayscale and
+  black-and-white JPEG image format.
+  {pr}`2028`
+
+- {{Fix}} numpy fft module now works correctly.
+  {pr}`2028`
 
 - New packages: `logbook`
 
@@ -133,6 +159,13 @@ substitutions:
 - {{Fix}} The `_` variable is now set by the Pyodide repl just like it is set in
   the native Python repl.
   {pr}`1904`
+
+- {{Fix}} The console now correctly handles it when an object's `__repr__` function raises an exception.
+  {pr}`2021`
+
+- {{ Enhancement }} Removed the `-s EMULATE_FUNCTION_POINTER_CASTS` flag,
+  yielding large benefits in speed, stack usage, and code size.
+  {pr}`2019`
 
 ## Version 0.18.1
 
@@ -172,7 +205,7 @@ substitutions:
 
 ### Packages
 
-- {{Fix}} pillow now correctly encodes/decodes JPEG image format. {pr}`1818`
+- {{Fix}} pillow now correctly encodes/decodes RGB JPEG image format. {pr}`1818`
 
 ### Micellaneous
 

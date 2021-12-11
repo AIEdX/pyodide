@@ -112,28 +112,6 @@ Module.runPythonInternal = function (code) {
 };
 
 /**
- * The JavaScript/Wasm call stack is too small to handle the default Python call
- * stack limit of 1000 frames. We determine the JavaScript call stack depth
- * available, and then guess a value for the Python recursion depth based on the
- * depth of the JavaScript call stack.
- *
- * @private
- */
-function calculateRecursionLimit() {
-  let depth = 0;
-  function recurse() {
-    depth += 1;
-    recurse();
-  }
-  try {
-    recurse();
-  } catch (err) {}
-
-  const recursionLimit = Math.floor(Math.min(depth / 25, 500));
-  return recursionLimit;
-}
-
-/**
  * @private
  * A proxy around globals that falls back to checking for a builtin if has or
  * get fails to find a global with the given key. Note that this proxy is
@@ -172,9 +150,10 @@ function finalizeBootstrap(config) {
   // runPythonInternal uses a separate namespace, so we don't pollute the main
   // environment with variables from our setup.
   runPythonInternal_dict = Module._pyodide._base.eval_code("{}");
+  Module.importlib = Module.runPythonInternal("import importlib; importlib");
+  let import_module = Module.importlib.import_module;
 
-  Module.sys = Module.runPythonInternal("import sys; sys");
-  Module.sys.setrecursionlimit(calculateRecursionLimit());
+  Module.sys = import_module("sys");
   Module.sys.path.insert(0, config.homedir);
 
   // Set up globals
@@ -194,7 +173,7 @@ function finalizeBootstrap(config) {
   // already set up before importing pyodide_py to simplify development of
   // pyodide_py code (Otherwise it's very hard to keep track of which things
   // aren't set up yet.)
-  Module.pyodide_py = Module.runPythonInternal("import pyodide; pyodide");
+  Module.pyodide_py = import_module("pyodide");
   Module.version = Module.pyodide_py.__version__;
 
   // copy some last constants onto public API.

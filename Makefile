@@ -67,8 +67,8 @@ env:
 	env
 
 
-node_modules/.installed : src/js/package.json
-	cd src/js && npm install --save-dev
+node_modules/.installed : src/js/package.json src/js/package-lock.json
+	cd src/js && npm ci
 	ln -sfn src/js/node_modules/ node_modules
 	touch node_modules/.installed
 
@@ -124,8 +124,6 @@ update_base_url: \
 	build/webworker.js
 
 
-test: all
-	pytest src emsdk/tests packages/*/test* pyodide-build -v
 
 lint: node_modules/.installed
 	# check for unused imports, the rest is done by black
@@ -141,10 +139,10 @@ lint: node_modules/.installed
 		packages/*/test* 			 \
 		conftest.py 				 \
 		docs
-	# mypy gets upset about there being both: src/py/setup.py and
-	# packages/micropip/src/setup.py. There is no easy way to fix this right now
-	# see python/mypy#10428. This will also cause trouble with pre-commit if you
-	# modify both setup.py files in the same commit.
+#mypy gets upset about there being both : src / py / setup.py and
+#packages / micropip / src / setup.py.There is no easy way to fix this right now
+#see python / mypy #10428. This will also cause trouble with pre - commit if you
+#modify both setup.py files in the same commit.
 	mypy --ignore-missing-imports    \
 		packages/micropip/src/
 

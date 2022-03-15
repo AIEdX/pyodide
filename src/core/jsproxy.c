@@ -101,8 +101,11 @@ typedef struct
 static void
 JsProxy_dealloc(JsProxy* self)
 {
-#ifdef HW_TRACE_REFS
-  printf("jsproxy delloc %zd, %zd\n", (long)self, (long)self->js);
+#ifdef DEBUG_F
+  extern bool tracerefs;
+  if (tracerefs) {
+    printf("jsproxy delloc %zd, %zd\n", (long)self, (long)self->js);
+  }
 #endif
   hiwire_CLEAR(self->js);
   hiwire_CLEAR(self->this_);
@@ -497,8 +500,8 @@ finally:
 
 // A helper method for jsproxy_subscript.
 EM_JS_REF(JsRef, JsProxy_subscript_js, (JsRef idobj, JsRef idkey), {
-  let obj = Module.hiwire.get_value(idobj);
-  let key = Module.hiwire.get_value(idkey);
+  let obj = Hiwire.get_value(idobj);
+  let key = Hiwire.get_value(idkey);
   let result = obj.get(key);
   // clang-format off
   if (result === undefined) {
@@ -511,7 +514,7 @@ EM_JS_REF(JsRef, JsProxy_subscript_js, (JsRef idobj, JsRef idkey), {
     }
   }
   // clang-format on
-  return Module.hiwire.new_value(result);
+  return Hiwire.new_value(result);
 });
 
 /**
@@ -704,14 +707,26 @@ JsProxy_toPy(PyObject* self,
              Py_ssize_t nargs,
              PyObject* kwnames)
 {
-  static const char* const _keywords[] = { "depth", 0 };
-  static struct _PyArg_Parser _parser = { "|$i:toPy", _keywords, 0 };
+  static const char* const _keywords[] = { "depth", "default_converter", 0 };
+  static struct _PyArg_Parser _parser = { "|$iO:toPy", _keywords, 0 };
   int depth = -1;
+  PyObject* default_converter = NULL;
   if (kwnames != NULL &&
-      !_PyArg_ParseStackAndKeywords(args, nargs, kwnames, &_parser, &depth)) {
+      !_PyArg_ParseStackAndKeywords(
+        args, nargs, kwnames, &_parser, &depth, &default_converter)) {
     return NULL;
   }
-  return js2python_convert(GET_JSREF(self), depth);
+  JsRef default_converter_js = NULL;
+  if (default_converter != NULL) {
+    default_converter_js = python2js(default_converter);
+  }
+  PyObject* result =
+    js2python_convert(GET_JSREF(self), depth, default_converter_js);
+  if (pyproxy_Check(default_converter_js)) {
+    destroy_proxy(default_converter_js, NULL);
+  }
+  hiwire_decref(default_converter_js);
+  return result;
 }
 
 static PyMethodDef JsProxy_toPy_MethodDef = {
@@ -980,8 +995,11 @@ JsProxy_cinit(PyObject* obj, JsRef idobj)
 {
   JsProxy* self = (JsProxy*)obj;
   self->js = hiwire_incref(idobj);
-#ifdef HW_TRACE_REFS
-  printf("JsProxy cinit: %zd, object: %zd\n", (long)obj, (long)self->js);
+#ifdef DEBUG_F
+  extern bool tracerefs;
+  if (tracerefs) {
+    printf("JsProxy cinit: %zd, object: %zd\n", (long)obj, (long)self->js);
+  }
 #endif
   return 0;
 }
@@ -1168,15 +1186,15 @@ finally:
  * destroys them and the result of the Promise.
  */
 EM_JS_REF(JsRef, get_async_js_call_done_callback, (JsRef proxies_id), {
-  let proxies = Module.hiwire.get_value(proxies_id);
-  return Module.hiwire.new_value(function(result) {
+  let proxies = Hiwire.get_value(proxies_id);
+  return Hiwire.new_value(function(result) {
     let msg = "This borrowed proxy was automatically destroyed " +
               "at the end of an asynchronous function call. Try " +
               "using create_proxy or create_once_callable.";
     for (let px of proxies) {
       Module.pyproxy_destroy(px, msg);
     }
-    if (Module.isPyProxy(result)) {
+    if (API.isPyProxy(result)) {
       Module.pyproxy_destroy(result, msg);
     }
   });
@@ -1581,7 +1599,7 @@ EM_JS_REF(JsRef,
 JsBuffer_DecodeString_js,
 (JsRef jsbuffer_id, char* encoding),
 {
-  let buffer = Module.hiwire.get_value(jsbuffer_id);
+  let buffer = Hiwire.get_value(jsbuffer_id);
   let encoding_js;
   if (encoding) {
     encoding_js = UTF8ToString(encoding);
@@ -1597,7 +1615,7 @@ JsBuffer_DecodeString_js,
     }
     throw e;
   }
-  return Module.hiwire.new_value(res);
+  return Hiwire.new_value(res);
 })
 // clang-format on
 

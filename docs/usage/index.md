@@ -39,7 +39,7 @@ application.
 ```{note}
 To avoid confusion, note that:
  - `cdn.jsdelivr.net/pyodide/` distributes Python packages built with Pyodide as well as `pyodide.js`
- - `cdn.jsdelivr.net/npm/pyodide@0.18.0/` is a mirror of the Pyodide NPM package, which includes none of the WASM files
+ - `cdn.jsdelivr.net/npm/pyodide@0.19.0/` is a mirror of the Pyodide NPM package, which includes none of the WASM files
 ```
 
 ### Supported browsers
@@ -52,6 +52,10 @@ Pyodide works in any modern web browser with WebAssembly support.
 | ------- | ------------------------- | --------------- |
 | Firefox | 70.0                      | 22 October 2019 |
 | Chrome  | 71.0                      | 4 December 2018 |
+
+Chrome 89 and 90 have bugs in the webassembly compiler which makes using Pyodide
+with them unstable. Known problems occur in numpy and have been observed
+occasionally in other packages. See {issue}`1384`.
 
 ```{note}
 Latest browser versions generally provide more reliable WebAssembly support
@@ -119,4 +123,5 @@ For this same reason, installing Pyodide packages from the CDN is explicitly not
    :hidden:
 
    webworker.md
+   loading-custom-python-code.md
 ```

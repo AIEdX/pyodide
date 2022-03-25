@@ -80,7 +80,7 @@ def test_code_runner_mode():
         match="multiple statements found while compiling a single statement",
     ):
         CodeRunner("1+1\n1+1", mode="single").compile().run()
-    with pytest.raises(SyntaxError, match="unexpected EOF while parsing"):
+    with pytest.raises(SyntaxError, match="invalid syntax"):
         CodeRunner(
             "def f():\n  1", mode="single", flags=PyCF_DONT_IMPLY_DEDENT
         ).compile().run()
@@ -326,9 +326,12 @@ def test_keyboard_interrupt(selenium):
         try {
             pyodide.runPython(`
                 from js import triggerKeyboardInterrupt
+                def f():
+                    pass
                 for x in range(100000):
                     if x == 2000:
                         triggerKeyboardInterrupt()
+                    f()
             `);
         } catch(e){}
         pyodide.setInterruptBuffer(undefined);
@@ -883,6 +886,74 @@ def test_reentrant_fatal(selenium_standalone):
     )
 
 
+def test_weird_throws(selenium):
+    """Throw strange Javascript garbage and make sure we survive."""
+    selenium.run_js(
+        '''
+        self.funcs = {
+            null(){ throw null; },
+            undefined(){ throw undefined; },
+            obj(){ throw {}; },
+            obj_null_proto(){ throw Object.create(null); },
+            string(){ throw "abc"; },
+            func(){ throw self.funcs.func; },
+            number(){ throw 12; },
+            bigint(){ throw 12n; },
+        };
+        pyodide.runPython(`
+            from js import funcs
+            from unittest import TestCase
+            from pyodide import JsException
+            raises = TestCase().assertRaisesRegex
+            msgs = {
+                "null" : ['type object .* tag .object Null.', '"""null"""',  'fails'],
+                "undefined" : ['type undefined .* tag .object Undefined.', '"""undefined"""',  'fails'],
+                "obj" : ['type object .* tag .object Object.', '""".object Object."""',  '""".object Object."""'],
+                "obj_null_proto" : ['type object .* tag .object Object.', 'fails',  'fails'],
+                "string" : ["Error: abc"],
+                "func" : ['type function .* tag .object Function.', 'throw self.funcs.func',  'throw self.funcs.func'],
+                "number" : ['type number .* tag .object Number.'],
+                "bigint" : ['type bigint .* tag .object BigInt.'],
+            }
+            for name, f in funcs.object_entries():
+                msg = '.*\\\\n.*'.join(msgs.get(name, ["xx"]))
+                with raises(JsException, msg):
+                    f()
+        `);
+        '''
+    )
+
+
+@pytest.mark.skip_refcount_check
+@pytest.mark.skip_pyproxy_check
+@pytest.mark.parametrize("to_throw", ["Object.create(null);", "'Some message'", "null"])
+def test_weird_fatals(selenium_standalone, to_throw):
+    expected_message = {
+        "Object.create(null);": "Error: A value of type object with tag [object Object] was thrown as an error!",
+        "'Some message'": "Error: Some message",
+        "null": "Error: A value of type object with tag [object Null] was thrown as an error!",
+    }[to_throw]
+    msg = selenium_standalone.run_js(
+        f"""
+        self.f = function(){{ throw {to_throw} }};
+        """
+        """
+        try {
+            pyodide.runPython(`
+                from _pyodide_core import raw_call
+                from js import f
+                raw_call(f)
+            `);
+        } catch(e){
+            return e.toString();
+        }
+        """
+    )
+    print("msg", msg[: len(expected_message)])
+    print("expected_message", expected_message)
+    assert msg[: len(expected_message)] == expected_message
+
+
 def test_restore_error(selenium):
     # See PR #1816.
     selenium.run_js(
@@ -983,7 +1054,10 @@ def test_custom_stdin_stdout(selenium_standalone_noload):
         return [self.stdoutStrings, self.stderrStrings];
         """
     )
-    assert stdoutstrings == ["Python initialization complete", "something to stdout"]
+    assert stdoutstrings[-2:] == [
+        "Python initialization complete",
+        "something to stdout",
+    ]
     assert stderrstrings == ["something to stderr"]
 
 

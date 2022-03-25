@@ -1,5 +1,5 @@
-export PYVERSION ?= 3.9.5
-export PYODIDE_EMSCRIPTEN_VERSION ?= 2.0.16
+export PYVERSION ?= 3.10.2
+export PYODIDE_EMSCRIPTEN_VERSION ?= 2.0.27
 
 # BASH_ENV tells bash to run pyodide_env.sh on startup, which sets various
 # environment variables. The next line instructs make to use bash to run each
@@ -19,10 +19,11 @@ export HOSTPYTHON=$(HOSTPYTHONROOT)/bin/python$(PYMAJOR).$(PYMINOR)
 
 export CPYTHONROOT=$(PYODIDE_ROOT)/cpython
 export CPYTHONLIB=$(CPYTHONROOT)/installs/python-$(PYVERSION)/lib/python$(PYMAJOR).$(PYMINOR)
-export CPYTHONBUILD=$(PYODIDE_ROOT)/cpython/build/Python-$(PYVERSION)
+export CPYTHONBUILD=$(CPYTHONROOT)/build/Python-$(PYVERSION)/
 
 export TARGETINSTALLDIR=$(PYODIDE_ROOT)/cpython/installs/python-$(PYVERSION)
 export HOSTINSTALLDIR=$(PYODIDE_ROOT)/packages/.artifacts
+export HOSTSITEPACKAGES=$(PYODIDE_ROOT)/packages/.artifacts/lib/python$(PYMAJOR).$(PYMINOR)/site-packages
 
 export PYTHONINCLUDE=$(PYODIDE_ROOT)/cpython/installs/python-$(PYVERSION)/include/python$(PYMAJOR).$(PYMINOR)
 
@@ -39,8 +40,8 @@ export PYODIDE=1
 # This is the legacy environment variable used for the aforementioned purpose
 export PYODIDE_PACKAGE_ABI=1
 
-# export DBGFLAGS=-g3 -gseparate-dwarf -sSEPARATE_DWARF_URL=http://localhost:8001/
 export DBGFLAGS=-g0
+# export DBGFLAGS=-g3 -gseparate-dwarf -sSEPARATE_DWARF_URL=http://localhost:8001/
 
 export OPTFLAGS=-O2
 export CFLAGS_BASE=\

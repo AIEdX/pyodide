@@ -23,6 +23,7 @@ from typing import Any, NoReturn, Optional, TextIO
 from urllib import request
 
 from . import pywasmcross
+from .common import find_matching_wheels
 
 
 @contextmanager
@@ -134,6 +135,7 @@ def get_bash_runner():
             "NUMPY_LIB",
             "PYODIDE_PACKAGE_ABI",
             "HOSTINSTALLDIR",
+            "HOSTSITEPACKAGES",
             "PYMAJOR",
             "PYMINOR",
             "PYMICRO",
@@ -290,7 +292,6 @@ def prepare_source(
 
     if "url" in src_metadata:
         download_and_extract(buildpath, srcpath, src_metadata)
-        patch(pkg_root, srcpath, src_metadata)
         return
     if "path" not in src_metadata:
         raise ValueError(
@@ -330,6 +331,10 @@ def patch(pkg_root: Path, srcpath: Path, src_metadata: dict[str, Any]):
     extras = src_metadata.get("extras", [])
     if not patches and not extras:
         return
+
+    # We checked these in check_package_config.
+    assert "url" in src_metadata
+    assert not src_metadata["url"].endswith(".whl")
 
     # Apply all the patches
     with chdir(srcpath):
@@ -466,11 +471,16 @@ def package_wheel(
         return
 
     distdir = srcpath / "dist"
-    wheel_paths = list(distdir.glob("*.whl"))
-    assert len(wheel_paths) == 1
-    unpack_wheel(wheel_paths[0])
-    wheel_paths[0].unlink()
-    wheel_dir = next(p for p in distdir.glob("*") if p.is_dir())
+    wheel, *rest = find_matching_wheels(distdir.glob("*.whl"))
+    if rest:
+        raise Exception(
+            f"Unexpected number of wheels {len(rest) + 1} when building {pkg_name}"
+        )
+    unpack_wheel(wheel)
+    wheel.unlink()
+    name, ver, _ = wheel.name.split("-", 2)
+    wheel_dir_name = f"{name}-{ver}"
+    wheel_dir = distdir / wheel_dir_name
 
     post = build_metadata.get("post")
     if post:
@@ -663,6 +673,25 @@ def build_package(
     src_dir_name: str = f"{name}-{version}"
     srcpath = build_dir / src_dir_name
 
+    url = source_metadata.get("url")
+    finished_wheel = url and url.endswith(".whl")
+    script = build_metadata.get("script")
+    library = build_metadata.get("library", False)
+    sharedlibrary = build_metadata.get("sharedlibrary", False)
+    post = build_metadata.get("post")
+
+    # These are validated in io.check_package_config
+    # If any of these assertions fail, the code path through here might get a
+    # bit weird
+    assert not (library and sharedlibrary)
+    if finished_wheel:
+        assert not script
+        assert not library
+        assert not sharedlibrary
+    if post:
+        assert not library
+        assert not sharedlibrary
+
     if not force_rebuild and not needs_rebuild(pkg_root, build_dir, source_metadata):
         return
 
@@ -672,20 +701,29 @@ def build_package(
             f"directory at the path {srcpath}, but that path does not exist."
         )
 
+    import os
+    import subprocess
+    import sys
+
+    tee = subprocess.Popen(["tee", pkg_root / "build.log"], stdin=subprocess.PIPE)
+    # Cause tee's stdin to get a copy of our stdin/stdout (as well as that
+    # of any child processes we spawn)
+    os.dup2(tee.stdin.fileno(), sys.stdout.fileno())  # type: ignore[union-attr]
+    os.dup2(tee.stdin.fileno(), sys.stderr.fileno())  # type: ignore[union-attr]
+
     with chdir(pkg_root), get_bash_runner() as bash_runner:
         bash_runner.env["PKG_VERSION"] = version
         if not continue_:
             prepare_source(pkg_root, build_dir, srcpath, source_metadata)
+            patch(pkg_root, srcpath, source_metadata)
 
         run_script(build_dir, srcpath, build_metadata, bash_runner)
 
-        if build_metadata.get("library"):
+        if library:
             create_packaged_token(build_dir)
             return
 
-        url = source_metadata.get("url")
-        finished_wheel = url and url.endswith(".whl")
-        if not build_metadata.get("sharedlibrary") and not finished_wheel:
+        if not sharedlibrary and not finished_wheel:
             compile(
                 name,
                 srcpath,
@@ -694,7 +732,7 @@ def build_package(
                 target_install_dir=target_install_dir,
                 host_install_dir=host_install_dir,
             )
-        if not build_metadata.get("sharedlibrary"):
+        if not sharedlibrary:
             package_wheel(
                 name,
                 pkg_root,
@@ -705,6 +743,9 @@ def build_package(
 
         shutil.rmtree(pkg_root / "dist", ignore_errors=True)
         shutil.copytree(srcpath / "dist", pkg_root / "dist")
+
+        if sharedlibrary:
+            shutil.make_archive(f"{name}-{version}", "zip", pkg_root / "dist")
 
         create_packaged_token(build_dir)
 

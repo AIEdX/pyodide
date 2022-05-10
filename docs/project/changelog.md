@@ -14,8 +14,18 @@ substitutions:
 
 ## Unreleased
 
+- {{ Enhancement }} {func}`micropip.install` now accepts a `deps` parameter.
+  If set to `False`, micropip will not install dependencies of the package.
+  {pr}`2433`
+
+- {{ Fix }} Fix a REPL error in printing high-dimensional lists.
+  {pr}`2517`
+
+- {{ Fix }} Fix output bug with using `input()` on online console
+  {pr}`2509`
+
 - {{ Enhancement }} Update sqlite version to latest stable release
-  {pr}`2477`
+  {pr}`2477` and {pr}`2518`
 
 - {{ Fix }} We now tell packagers (e.g., Webpack) to ignore npm-specific imports when packing files for the browser. {pr}`2468`
 
@@ -42,12 +52,31 @@ substitutions:
 - {{ Fix }} The build will error out earlier if `cmake` or `libtool` are not installed.
   {pr}`2423`
 
+- {{ Enhancement }} `pyodide.unpackArchive` now accepts any `ArrayBufferView` or
+  `ArrayBuffer` as first argument, rather than only a `Uint8Array`.
+  {pr}`2451`
+
+- {{ Feature }} Added `pyodide.run_js` API.
+  {pr}`2426`
+
 - {{ Enhancement }} Add SHA-256 hash of package to entries in `packages.json`
   {pr}`2455`
 
 - {{ Fix }} BigInt's between 2^{32\*n - 1} and 2^{32\*n} no longer get
   translated to negative Python ints.
   {pr}`2484`
+
+- {{ Enhancement }} `run_in_pyodide` now has support for pytest assertion
+  rewriting and various other improvements.
+  {pr}`2510`
+
+- {{ BREAKING }} `pyodide_build.testing` is removed. `run_in_pyodide` decorator can now be accessed
+  through `pyodide_test_runner`.
+  {pr}`2418`
+
+- {{ Enhancement }} Added the `js_id` attribute to `JsProxy` to allow using
+  JavaScript object identity as a dictionary key.
+  {pr}`2515`
 
 ### Packages
 

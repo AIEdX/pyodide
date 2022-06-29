@@ -1,15 +1,20 @@
+import contextlib
 import functools
 import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Generator, Iterable, Iterator, Mapping
 
 import tomli
 from packaging.tags import Tag, compatible_tags, cpython_tags
 from packaging.utils import parse_wheel_filename
 
 from .io import parse_package_config
+
+
+def emscripten_version():
+    return get_make_flag("PYODIDE_EMSCRIPTEN_VERSION")
 
 
 def platform():
@@ -249,5 +254,19 @@ def get_unisolated_packages():
         config = parse_package_config(pkg, check=False)
         if config.get("build", {}).get("cross-build-env", False):
             unisolated_packages.append(config["package"]["name"])
+    # TODO: remove setuptools_rust from this when they release the next version.
+    unisolated_packages.append("setuptools_rust")
     os.environ["UNISOLATED_PACKAGES"] = json.dumps(unisolated_packages)
     return unisolated_packages
+
+
+@contextlib.contextmanager
+def replace_env(build_env: Mapping[str, str]) -> Generator[None, None, None]:
+    old_environ = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(build_env)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(old_environ)

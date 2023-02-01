@@ -1,20 +1,95 @@
 import contextlib
 import functools
 import os
+import re
+import shutil
 import subprocess
 import sys
+import textwrap
+import zipfile
+from collections import deque
+from collections.abc import Generator, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator, Iterable, Iterator, Mapping
+from typing import Any, NoReturn
 
-import tomli
+if sys.version_info < (3, 11, 0):
+    import tomli as tomllib
+else:
+    import tomllib
+
 from packaging.tags import Tag, compatible_tags, cpython_tags
 from packaging.utils import parse_wheel_filename
 
-from .io import parse_package_config
+from .logger import logger
+from .recipe import load_all_recipes
+
+BUILD_VARS: set[str] = {
+    "PATH",
+    "PYTHONPATH",
+    "PYODIDE_ROOT",
+    "PYTHONINCLUDE",
+    "NUMPY_LIB",
+    "PYODIDE_PACKAGE_ABI",
+    "HOME",
+    "HOSTINSTALLDIR",
+    "TARGETINSTALLDIR",
+    "SYSCONFIG_NAME",
+    "HOSTSITEPACKAGES",
+    "PYVERSION",
+    "PYMAJOR",
+    "PYMINOR",
+    "PYMICRO",
+    "CPYTHONBUILD",
+    "CPYTHONLIB",
+    "SIDE_MODULE_CFLAGS",
+    "SIDE_MODULE_CXXFLAGS",
+    "SIDE_MODULE_LDFLAGS",
+    "STDLIB_MODULE_CFLAGS",
+    "UNISOLATED_PACKAGES",
+    "WASM_LIBRARY_DIR",
+    "WASM_PKG_CONFIG_PATH",
+    "CARGO_BUILD_TARGET",
+    "CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER",
+    "RUSTFLAGS",
+    "PYODIDE_EMSCRIPTEN_VERSION",
+    "PLATFORM_TRIPLET",
+    "SYSCONFIGDATA_DIR",
+    "RUST_TOOLCHAIN",
+}
 
 
 def emscripten_version() -> str:
     return get_make_flag("PYODIDE_EMSCRIPTEN_VERSION")
+
+
+def get_emscripten_version_info() -> str:
+    """Extracted for testing purposes."""
+    return subprocess.run(["emcc", "-v"], capture_output=True, encoding="utf8").stderr
+
+
+def check_emscripten_version() -> None:
+    needed_version = emscripten_version()
+    try:
+        version_info = get_emscripten_version_info()
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"No Emscripten compiler found. Need Emscripten version {needed_version}"
+        ) from None
+    installed_version = None
+    try:
+        for x in reversed(version_info.partition("\n")[0].split(" ")):
+            if re.match(r"[0-9]+\.[0-9]+\.[0-9]+", x):
+                installed_version = x
+                break
+    except Exception:
+        raise RuntimeError("Failed to determine Emscripten version.") from None
+    if installed_version is None:
+        raise RuntimeError("Failed to determine Emscripten version.")
+    if installed_version != needed_version:
+        raise RuntimeError(
+            f"Incorrect Emscripten version {installed_version}. Need Emscripten version {needed_version}"
+        )
 
 
 def platform() -> str:
@@ -35,6 +110,8 @@ def pyodide_tags() -> Iterator[Tag]:
     python_version = (int(PYMAJOR), int(PYMINOR))
     yield from cpython_tags(platforms=[PLATFORM], python_version=python_version)
     yield from compatible_tags(platforms=[PLATFORM], python_version=python_version)
+    # Following line can be removed once packaging 22.0 is released and we update to it.
+    yield Tag(interpreter=f"cp{PYMAJOR}{PYMINOR}", abi="none", platform="any")
 
 
 def find_matching_wheels(wheel_paths: Iterable[Path]) -> Iterator[Path]:
@@ -61,83 +138,50 @@ def find_matching_wheels(wheel_paths: Iterable[Path]) -> Iterator[Path]:
                 yield wheel_path
 
 
-UNVENDORED_STDLIB_MODULES = {"test", "distutils"}
-
-ALWAYS_PACKAGES = {
-    "pyparsing",
-    "packaging",
-    "micropip",
-}
-
-CORE_PACKAGES = {
-    "micropip",
-    "pyparsing",
-    "pytz",
-    "packaging",
-    "Jinja2",
-    "regex",
-    "fpcast-test",
-    "sharedlib-test-py",
-    "cpp-exceptions-test",
-    "ssl",
-    "pytest",
-    "tblib",
-}
-
-CORE_SCIPY_PACKAGES = {
-    "numpy",
-    "scipy",
-    "pandas",
-    "matplotlib",
-    "scikit-learn",
-    "joblib",
-    "pytest",
-}
-
-
-def _parse_package_subset(query: str | None) -> set[str]:
-    """Parse the list of packages specified with PYODIDE_PACKAGES env var.
-
-    Also add the list of mandatory packages: ["pyparsing", "packaging",
-    "micropip"]
-
-    Supports following meta-packages,
-     - 'core': corresponds to packages needed to run the core test suite
-       {"micropip", "pyparsing", "pytz", "packaging", "Jinja2", "fpcast-test"}. This is the default option
-       if query is None.
-     - 'min-scipy-stack': includes the "core" meta-package as well as some of the
-       core packages from the scientific python stack and their dependencies:
-       {"numpy", "scipy", "pandas", "matplotlib", "scikit-learn", "joblib", "pytest"}.
-       This option is non exhaustive and is mainly intended to make build faster
-       while testing a diverse set of scientific packages.
-     - '*': corresponds to all packages (returns None)
-
-    Note: None as input is equivalent to PYODIDE_PACKAGES being unset and leads
-    to only the core packages being built.
-
-    Returns:
-      a set of package names to build or None (build all packages).
+def parse_top_level_import_name(whlfile: Path) -> list[str] | None:
     """
-    if query is None:
-        query = "core"
+    Parse the top-level import names from a wheel file.
+    """
 
-    packages = {el.strip() for el in query.split(",")}
-    packages.update(ALWAYS_PACKAGES)
-    packages.update(UNVENDORED_STDLIB_MODULES)
-    # handle meta-packages
-    if "core" in packages:
-        packages |= CORE_PACKAGES
-        packages.discard("core")
-    if "min-scipy-stack" in packages:
-        packages |= CORE_PACKAGES | CORE_SCIPY_PACKAGES
-        packages.discard("min-scipy-stack")
+    if not whlfile.name.endswith(".whl"):
+        raise RuntimeError(f"{whlfile} is not a wheel file.")
 
-    # Hack to deal with the circular dependence between soupsieve and
-    # beautifulsoup4
-    if "beautifulsoup4" in packages:
-        packages.add("soupsieve")
-    packages.discard("")
-    return packages
+    whlzip = zipfile.Path(whlfile)
+
+    def _valid_package_name(dirname: str) -> bool:
+        return all([invalid_chr not in dirname for invalid_chr in ".- "])
+
+    def _has_python_file(subdir: zipfile.Path) -> bool:
+        queue = deque([subdir])
+        while queue:
+            nested_subdir = queue.pop()
+            for subfile in nested_subdir.iterdir():
+                if subfile.is_file() and subfile.name.endswith(".py"):
+                    return True
+                elif subfile.is_dir() and _valid_package_name(subfile.name):
+                    queue.append(subfile)
+
+        return False
+
+    # If there is no top_level.txt file, we will find top level imports by
+    # 1) a python file on a top-level directory
+    # 2) a sub directory with __init__.py
+    # following: https://github.com/pypa/setuptools/blob/d680efc8b4cd9aa388d07d3e298b870d26e9e04b/setuptools/discovery.py#L122
+    top_level_imports = []
+    for subdir in whlzip.iterdir():
+        if subdir.is_file() and subdir.name.endswith(".py"):
+            top_level_imports.append(subdir.name[:-3])
+        elif subdir.is_dir() and _valid_package_name(subdir.name):
+            if _has_python_file(subdir):
+                top_level_imports.append(subdir.name)
+
+    if not top_level_imports:
+        logger.warning(
+            f"WARNING: failed to parse top level import name from {whlfile}."
+        )
+        return None
+
+    return top_level_imports
 
 
 def get_make_flag(name: str) -> str:
@@ -147,7 +191,6 @@ def get_make_flag(name: str) -> str:
         SIDE_MODULE_LDFLAGS
         SIDE_MODULE_CFLAGS
         SIDE_MODULE_CXXFLAGS
-        TOOLSDIR
     """
     return get_make_environment_vars()[name]
 
@@ -179,10 +222,43 @@ def get_make_environment_vars() -> dict[str, str]:
         equalPos = line.find("=")
         if equalPos != -1:
             varname = line[0:equalPos]
+
+            if varname not in BUILD_VARS:
+                continue
+
             value = line[equalPos + 1 :]
             value = value.strip("'").strip()
             environment[varname] = value
     return environment
+
+
+def environment_substitute_args(
+    args: dict[str, str], env: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """
+    Substitute $(VAR) in args with the value of the environment variable VAR.
+
+    Parameters
+    ----------
+    args
+        A dictionary of arguments
+
+    env
+        A dictionary of environment variables. If None, use os.environ.
+
+    Returns
+    -------
+    A dictionary of arguments with the substitutions applied.
+    """
+    if env is None:
+        env = dict(os.environ)
+    subbed_args = {}
+    for arg, value in args.items():
+        if isinstance(value, str):
+            for e_name, e_value in env.items():
+                value = value.replace(f"$({e_name})", e_value)
+        subbed_args[arg] = value
+    return subbed_args
 
 
 def search_pyodide_root(curdir: str | Path, *, max_depth: int = 5) -> Path:
@@ -203,9 +279,9 @@ def search_pyodide_root(curdir: str | Path, *, max_depth: int = 5) -> Path:
 
         try:
             with pyproject_file.open("rb") as f:
-                configs = tomli.load(f)
-        except tomli.TOMLDecodeError:
-            raise ValueError(f"Could not parse {pyproject_file}.")
+                configs = tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            raise ValueError(f"Could not parse {pyproject_file}.") from e
 
         if "tool" in configs and "pyodide" in configs["tool"]:
             return base
@@ -229,11 +305,14 @@ def init_environment() -> None:
         os.environ["PYODIDE_ROOT"] = str(search_pyodide_root(os.getcwd()))
 
     os.environ.update(get_make_environment_vars())
-    hostsitepackages = get_hostsitepackages()
-    pythonpath = [
-        hostsitepackages,
-    ]
-    os.environ["PYTHONPATH"] = ":".join(pythonpath)
+    try:
+        hostsitepackages = get_hostsitepackages()
+        pythonpath = [
+            hostsitepackages,
+        ]
+        os.environ["PYTHONPATH"] = ":".join(pythonpath)
+    except KeyError:
+        pass
     os.environ["BASH_ENV"] = ""
     get_unisolated_packages()
 
@@ -251,13 +330,17 @@ def get_unisolated_packages() -> list[str]:
     if "UNISOLATED_PACKAGES" in os.environ:
         return json.loads(os.environ["UNISOLATED_PACKAGES"])
     PYODIDE_ROOT = get_pyodide_root()
-    unisolated_packages = []
-    for pkg in (PYODIDE_ROOT / "packages").glob("**/meta.yaml"):
-        config = parse_package_config(pkg, check=False)
-        if config.get("build", {}).get("cross-build-env", False):
-            unisolated_packages.append(config["package"]["name"])
-    # TODO: remove setuptools_rust from this when they release the next version.
-    unisolated_packages.append("setuptools_rust")
+    unisolated_file = PYODIDE_ROOT / "unisolated.txt"
+    if unisolated_file.exists():
+        # in xbuild env, read from file
+        unisolated_packages = unisolated_file.read_text().splitlines()
+    else:
+        unisolated_packages = []
+        recipe_dir = PYODIDE_ROOT / "packages"
+        recipes = load_all_recipes(recipe_dir)
+        for name, config in recipes.items():
+            if config.build.cross_build_env:
+                unisolated_packages.append(name)
     os.environ["UNISOLATED_PACKAGES"] = json.dumps(unisolated_packages)
     return unisolated_packages
 
@@ -272,3 +355,54 @@ def replace_env(build_env: Mapping[str, str]) -> Generator[None, None, None]:
     finally:
         os.environ.clear()
         os.environ.update(old_environ)
+
+
+def exit_with_stdio(result: subprocess.CompletedProcess[str]) -> NoReturn:
+    if result.stdout:
+        logger.error("  stdout:")
+        logger.error(textwrap.indent(result.stdout, "    "))
+    if result.stderr:
+        logger.error("  stderr:")
+        logger.error(textwrap.indent(result.stderr, "    "))
+    raise SystemExit(result.returncode)
+
+
+def in_xbuildenv() -> bool:
+    pyodide_root = get_pyodide_root()
+    return pyodide_root.name == "pyodide-root"
+
+
+def find_missing_executables(executables: list[str]) -> list[str]:
+    return list(filter(lambda exe: shutil.which(exe) is None, executables))
+
+
+@contextmanager
+def chdir(new_dir: Path) -> Generator[None, None, None]:
+    orig_dir = Path.cwd()
+    try:
+        os.chdir(new_dir)
+        yield
+    finally:
+        os.chdir(orig_dir)
+
+
+def set_build_environment(env: dict[str, str]) -> None:
+    """Assign build environment variables to env.
+
+    Sets common environment between in tree and out of tree package builds.
+    """
+    env.update({key: os.environ[key] for key in BUILD_VARS})
+    env["PYODIDE"] = "1"
+    if "PYODIDE_JOBS" in os.environ:
+        env["PYODIDE_JOBS"] = os.environ["PYODIDE_JOBS"]
+
+    env["PKG_CONFIG_PATH"] = env["WASM_PKG_CONFIG_PATH"]
+    if "PKG_CONFIG_PATH" in os.environ:
+        env["PKG_CONFIG_PATH"] += f":{os.environ['PKG_CONFIG_PATH']}"
+
+    tools_dir = Path(__file__).parent / "tools"
+
+    env["CMAKE_TOOLCHAIN_FILE"] = str(
+        tools_dir / "cmake/Modules/Platform/Emscripten.cmake"
+    )
+    env["PYO3_CONFIG_FILE"] = str(tools_dir / "pyo3_config.ini")

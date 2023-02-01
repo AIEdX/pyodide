@@ -1,13 +1,14 @@
 package:
   name: sharedlib-test
   version: "1.0"
-  _tag: pyodide.test
+  tag:
+    - pyodide.test
 
 source:
   path: src
 
 build:
-  sharedlibrary: true
+  type: shared_library
   script: |
     emcc -c main.c -o main.o ${SIDE_MODULE_CFLAGS}
     emcc -c dep.c -o dep.o ${SIDE_MODULE_CFLAGS}

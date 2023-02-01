@@ -13,9 +13,8 @@ all: check \
 	dist/pyodide.js \
 	dist/pyodide.d.ts \
 	dist/package.json \
+	dist/python \
 	dist/console.html \
-	dist/distutils.tar \
-	dist/test.tar \
 	dist/repodata.json \
 	dist/pyodide_py.tar \
 	dist/test.html \
@@ -28,26 +27,77 @@ all: check \
 dist/pyodide_py.tar: $(wildcard src/py/pyodide/*.py)  $(wildcard src/py/_pyodide/*.py)
 	cd src/py && tar --exclude '*__pycache__*' -cf ../../dist/pyodide_py.tar pyodide _pyodide
 
-dist/pyodide.asm.js: \
+src/core/pyodide_pre.o: src/js/_pyodide.out.js src/core/pre.js
+# Our goal here is to inject src/js/_pyodide.out.js into an archive file so that
+# when linked, Emscripten will include it. We use the same pathway that EM_JS
+# uses, but EM_JS is itself unsuitable. Why? Because the C preprocessor /
+# compiler modified strings and there is no "raw" strings feature. In
+# particular, it seems to choke on regex in the JavaScript code. Our bundle
+# includes vendored npm packages which we have no control over, so it is not
+# simple to rewrite the code to restrict it to syntax that is legal inside of
+# EM_JS.
+#
+# To get around this problem, we use an array initializer instead of a string
+# initializer. We write a string file and then convert it to a .c file with xxd
+# as suggested here:
+# https://unix.stackexchange.com/questions/176111/how-to-dump-a-binary-file-as-a-c-c-string-literal
+# We use `xxd -i -` which converts the input to a comma separated list of
+# hexadecimal pairs which can go into an array initializer.
+#
+# EM_JS works by injecting a string variable into a special section called em_js
+# called __em_js__<function_name>. The contents of this variable are of the form
+# "argspec<::>body". The argspec is used to generate the JavaScript function
+# declaration:
+# https://github.com/emscripten-core/emscripten/blob/085fe968d43c7d3674376f29667d6e5f42b24966/emscripten.py?plain=1#L603
+#
+# The body has to start with a function block, but it is possible to inject
+# extra stuff after the block ends. We make a 0-argument function called
+# pyodide_js_init. Immediately after that we inject pre.js and then a call to
+# the init function.
+	# First the data file
+	rm -f tmp.dat
+	echo '()<::>{' >> tmp.dat             # zero argument argspec and start body
+	cat src/js/_pyodide.out.js >> tmp.dat # All of _pyodide.out.js is body
+	echo '}' >> tmp.dat                   # Close function body
+	cat src/core/pre.js >> tmp.dat        # Execute pre.js too
+	echo "pyodide_js_init();" >> tmp.dat  # Then execute the function.
+
+	# Now generate the C file. Define a string __em_js__pyodide_js_init with
+	# contents from tmp.dat
+	rm -f src/core/pyodide_pre.gen.c
+	echo '__attribute__((used)) __attribute__((section("em_js"), aligned(1)))' >> src/core/pyodide_pre.gen.c
+	echo 'char __em_js__pyodide_js_init[] = {'  >> src/core/pyodide_pre.gen.c
+	cat tmp.dat  | xxd -i - >> src/core/pyodide_pre.gen.c
+	# Add a null byte to terminate the string
+	echo ', 0};' >> src/core/pyodide_pre.gen.c
+
+	rm tmp.dat
+	emcc -c src/core/pyodide_pre.gen.c -o src/core/pyodide_pre.o
+
+dist/libpyodide.a: \
 	src/core/docstring.o \
 	src/core/error_handling.o \
-	src/core/error_handling_cpp.o \
 	src/core/hiwire.o \
+	src/core/_pyodide_core.o \
 	src/core/js2python.o \
 	src/core/jsproxy.o \
-	src/core/main.o  \
 	src/core/pyproxy.o \
 	src/core/python2js_buffer.o \
 	src/core/python2js.o \
-	src/js/_pyodide.out.js \
+	src/core/pyodide_pre.o
+	emar rcs dist/libpyodide.a $(filter %.o,$^)
+
+
+dist/pyodide.asm.js: \
+	src/core/main.o  \
 	$(wildcard src/py/lib/*.py) \
-	$(CPYTHONLIB)
+	$(CPYTHONLIB) \
+	dist/libpyodide.a
 	date +"[%F %T] Building pyodide.asm.js..."
 	[ -d dist ] || mkdir dist
-	$(CXX) -o dist/pyodide.asm.js $(filter %.o,$^) \
-		$(MAIN_MODULE_LDFLAGS)
+	$(CXX) -o dist/pyodide.asm.js dist/libpyodide.a src/core/main.o $(MAIN_MODULE_LDFLAGS)
 
-	if [[ -n $${PYODIDE_SOURCEMAP+x} ]] || [[ -n $${PYODIDE_SYMBOLS+x} ]]; then \
+	if [[ -n $${PYODIDE_SOURCEMAP+x} ]] || [[ -n $${PYODIDE_SYMBOLS+x} ]] || [[ -n $${PYODIDE_DEBUG_JS+x} ]]; then \
 		cd dist && npx prettier -w pyodide.asm.js ; \
 	fi
 
@@ -76,7 +126,7 @@ node_modules/.installed : src/js/package.json src/js/package-lock.json
 	touch node_modules/.installed
 
 dist/pyodide.js src/js/_pyodide.out.js: src/js/*.ts src/js/pyproxy.gen.ts src/js/error_handling.gen.ts node_modules/.installed
-	npx rollup -c src/js/rollup.config.js
+	npx rollup -c src/js/rollup.config.mjs
 
 dist/package.json : src/js/package.json
 	cp $< $@
@@ -91,6 +141,9 @@ dist/pyodide.d.ts: src/js/*.ts src/js/pyproxy.gen.ts src/js/error_handling.gen.t
 
 src/js/error_handling.gen.ts : src/core/error_handling.ts
 	cp $< $@
+
+%.wasm.gen.js: %.wat
+	node tools/assemble_wat.js $@
 
 src/js/pyproxy.gen.ts : src/core/pyproxy.* src/core/*.h
 	# We can't input pyproxy.js directly because CC will be unhappy about the file
@@ -113,7 +166,8 @@ src/js/pyproxy.gen.ts : src/core/pyproxy.* src/core/*.h
 	echo "// Do not edit it directly!" >> $@
 	cat src/core/pyproxy.ts | \
 		sed '/^\/\/\s*pyodide-skip/,/^\/\/\s*end-pyodide-skip/d' | \
-		$(CC) -E -C -P -imacros src/core/pyproxy.c $(MAIN_MODULE_CFLAGS) - \
+		$(CC) -E -C -P -imacros src/core/pyproxy.c $(MAIN_MODULE_CFLAGS) - | \
+		sed 's/^#pragma clang.*//g' \
 		>> $@
 
 dist/test.html: src/templates/test.html
@@ -122,18 +176,13 @@ dist/test.html: src/templates/test.html
 dist/module_test.html: src/templates/module_test.html
 	cp $< $@
 
+dist/python: src/templates/python
+	cp $< $@
+
 .PHONY: dist/console.html
 dist/console.html: src/templates/console.html
 	cp $< $@
 	sed -i -e 's#{{ PYODIDE_BASE_URL }}#$(PYODIDE_BASE_URL)#g' $@
-
-
-.PHONY: docs/_build/html/console.html
-docs/_build/html/console.html: src/templates/console.html
-	mkdir -p docs/_build/html
-	cp $< $@
-	sed -i -e 's#{{ PYODIDE_BASE_URL }}#$(PYODIDE_BASE_URL)#g' $@
-
 
 .PHONY: dist/webworker.js
 dist/webworker.js: src/templates/webworker.js
@@ -170,49 +219,8 @@ clean-all: clean
 	make -C emsdk clean
 	make -C cpython clean-all
 
-src/core/error_handling_cpp.o: src/core/error_handling_cpp.cpp
-	$(CXX) -o $@ -c $< $(MAIN_MODULE_CFLAGS) -Isrc/core/
-
 %.o: %.c $(CPYTHONLIB) $(wildcard src/core/*.h src/core/*.js)
 	$(CC) -o $@ -c $< $(MAIN_MODULE_CFLAGS) -Isrc/core/
-
-
-# Stdlib modules that we repackage as standalone packages
-
-TEST_EXTENSIONS= \
-		_testinternalcapi.so \
-		_testcapi.so \
-		_testbuffer.so \
-		_testimportmultiple.so \
-		_testmultiphase.so \
-		_ctypes_test.so
-TEST_MODULE_CFLAGS= $(SIDE_MODULE_CFLAGS) -I Include/ -I .
-
-# TODO: also include test directories included in other stdlib modules
-dist/test.tar: $(CPYTHONLIB) node_modules/.installed
-	cd $(CPYTHONBUILD) && emcc $(TEST_MODULE_CFLAGS) -c Modules/_testinternalcapi.c -o Modules/_testinternalcapi.o \
-							   -I Include/internal/ -DPy_BUILD_CORE_MODULE
-	cd $(CPYTHONBUILD) && emcc $(TEST_MODULE_CFLAGS) -c Modules/_testcapimodule.c -o Modules/_testcapi.o
-	cd $(CPYTHONBUILD) && emcc $(TEST_MODULE_CFLAGS) -c Modules/_testbuffer.c -o Modules/_testbuffer.o
-	cd $(CPYTHONBUILD) && emcc $(TEST_MODULE_CFLAGS) -c Modules/_testimportmultiple.c -o Modules/_testimportmultiple.o
-	cd $(CPYTHONBUILD) && emcc $(TEST_MODULE_CFLAGS) -c Modules/_testmultiphase.c -o Modules/_testmultiphase.o
-	cd $(CPYTHONBUILD) && emcc $(TEST_MODULE_CFLAGS) -c Modules/_ctypes/_ctypes_test.c -o Modules/_ctypes_test.o
-
-	for testname in $(TEST_EXTENSIONS); do \
-		cd $(CPYTHONBUILD) && \
-		emcc Modules/$${testname%.*}.o -o $$testname $(SIDE_MODULE_LDFLAGS) && \
-		rm -f $(CPYTHONLIB)/$$testname && \
-		ln -s $(CPYTHONBUILD)/$$testname $(CPYTHONLIB)/$$testname ; \
-	done
-
-	cd $(CPYTHONLIB) && tar -h --exclude=__pycache__ -cf $(PYODIDE_ROOT)/dist/test.tar \
-		test $(TEST_EXTENSIONS) unittest/test sqlite3/test ctypes/test
-
-	cd $(CPYTHONLIB) && rm $(TEST_EXTENSIONS)
-
-
-dist/distutils.tar: $(CPYTHONLIB) node_modules/.installed
-	cd $(CPYTHONLIB) && tar --exclude=__pycache__ -cf $(PYODIDE_ROOT)/dist/distutils.tar distutils
 
 
 $(CPYTHONLIB): emsdk/emsdk/.complete
@@ -233,16 +241,11 @@ emsdk/emsdk/.complete:
 	date +"[%F %T] done building emsdk."
 
 
-SETUPTOOLS_RUST_COMMIT=5e8c380429aba1e5df5815dcf921025c599cecec
 rust:
-	wget https://sh.rustup.rs -O /rustup.sh
-	sh /rustup.sh -y
+	echo -e '\033[0;31m[WARNING] The target `make rust` is only for development and we do not guarantee that it will work or be maintained.\033[0m'
+	wget -q -O - https://sh.rustup.rs | sh -s -- -y
 	source $(HOME)/.cargo/env && rustup toolchain install $(RUST_TOOLCHAIN) && rustup default $(RUST_TOOLCHAIN)
 	source $(HOME)/.cargo/env && rustup target add wasm32-unknown-emscripten --toolchain $(RUST_TOOLCHAIN)
-	# Install setuptools-rust with a fix for Wasm targets
-	# TODO: Remove this when they release the next version.
-	pip install -t $(HOSTSITEPACKAGES) git+https://github.com/PyO3/setuptools-rust.git@$(SETUPTOOLS_RUST_COMMIT)
-
 
 FORCE:
 

@@ -8,6 +8,10 @@ function ensureCaughtObjectIsError(e: any): Error {
   if (typeof e === "string") {
     // Sometimes emscripten throws a raw string...
     e = new Error(e);
+  } else if (e && typeof e === "object" && e.name === "ExitStatus") {
+    let status = e.status;
+    e = new Exit(e.message);
+    e.status = status;
   } else if (
     typeof e !== "object" ||
     e === null ||
@@ -15,9 +19,8 @@ function ensureCaughtObjectIsError(e: any): Error {
     typeof e.message !== "string"
   ) {
     // We caught something really weird. Be brave!
-    let msg = `A value of type ${typeof e} with tag ${Object.prototype.toString.call(
-      e
-    )} was thrown as an error!`;
+    const typeTag = API.getTypeTag(e);
+    let msg = `A value of type ${typeof e} with tag ${typeTag} was thrown as an error!`;
     try {
       msg += `\nString interpolation of the thrown value gives """${e}""".`;
     } catch (e) {
@@ -35,6 +38,28 @@ function ensureCaughtObjectIsError(e: any): Error {
   // 2. hiwire_is_error(e) returns true
   return e;
 }
+
+class CppException extends Error {
+  ty: string;
+  constructor(ty: string, msg: string | undefined, ptr: number) {
+    if (!msg) {
+      msg = `The exception is an object of type ${ty} at address ${ptr} which does not inherit from std::exception`;
+    }
+    super(msg);
+    this.ty = ty;
+  }
+}
+Object.defineProperty(CppException.prototype, "name", {
+  get() {
+    return `${this.constructor.name} ${this.ty}`;
+  },
+});
+
+function convertCppException(e: number) {
+  let [ty, msg]: [string, string] = Module.getExceptionMessage(e);
+  return new CppException(ty, msg, e);
+}
+Tests.convertCppException = convertCppException;
 
 let fatal_error_occurred = false;
 /**
@@ -59,7 +84,7 @@ API.fatal_error = function (e: any) {
     return;
   }
   if (typeof e === "number") {
-    // Hopefully a C++ exception? Have to do some conversion work.
+    // Hopefully a C++ exception?
     e = convertCppException(e);
   } else {
     e = ensureCaughtObjectIsError(e);
@@ -67,20 +92,27 @@ API.fatal_error = function (e: any) {
   // Mark e so we know not to handle it later in EM_JS wrappers
   e.pyodide_fatal_error = true;
   fatal_error_occurred = true;
-  console.error(
-    "Pyodide has suffered a fatal error. Please report this to the Pyodide maintainers."
-  );
-  console.error("The cause of the fatal error was:");
-  if (API.inTestHoist) {
-    // Test hoist won't print the error object in a useful way so convert it to
-    // string.
-    console.error(e.toString());
-    console.error(e.stack);
-  } else {
-    console.error(e);
+  const isexit = e instanceof Exit;
+  if (!isexit) {
+    console.error(
+      "Pyodide has suffered a fatal error. Please report this to the Pyodide maintainers.",
+    );
+    console.error("The cause of the fatal error was:");
+    if (API.inTestHoist) {
+      // Test hoist won't print the error object in a useful way so convert it to
+      // string.
+      console.error(e.toString());
+      console.error(e.stack);
+    } else {
+      console.error(e);
+    }
   }
   try {
-    Module._dump_traceback();
+    if (!isexit) {
+      Module._dump_traceback();
+    }
+    let reason = isexit ? "exited" : "fatally failed";
+    let msg = `Pyodide already ${reason} and can no longer be used.`;
     for (let key of Object.keys(API.public_api)) {
       if (key.startsWith("_") || key === "version") {
         continue;
@@ -89,9 +121,7 @@ API.fatal_error = function (e: any) {
         enumerable: true,
         configurable: true,
         get: () => {
-          throw new Error(
-            "Pyodide already fatally failed and can no longer be used."
-          );
+          throw new Error(msg);
         },
       });
     }
@@ -105,83 +135,38 @@ API.fatal_error = function (e: any) {
   throw e;
 };
 
-class CppException extends Error {
-  ty: string;
-  constructor(ty: string, msg: string) {
-    super(msg);
-    this.ty = ty;
-  }
-}
-Object.defineProperty(CppException.prototype, "name", {
-  get() {
-    return `${this.constructor.name} ${this.ty}`;
-  },
-});
-
-/**
- *
- * Return the type name, whether the pointer inherits from exception, and the
- * vtable pointer for the type.
- *
- * This code is based on imitating:
- * 1. the implementation of __cxa_find_matching_catch
- * 2. the disassembly from:
- * ```C++
- * try {
- *    ...
- * } catch(exception e){
- *    ...
- * }
- *
- * @param ptr
- * @returns
- * exc_type_name : the type name of the exception, as would be reported by
- * `typeid(type).name()` but also demangled.
- *
- * is_exception_subclass : true if the object is a subclass of exception. In
- * this case we will use `exc.what()` to get an error message.
- *
- * adjusted_ptr : The adjusted vtable pointer for the exception to use to invoke
- * exc.what().
- *
- * @private
- */
-function cppExceptionInfo(ptr: number): [string, boolean, number] {
-  const base_exception_type = Module._exc_type();
-  const ei = new Module.ExceptionInfo(ptr);
-  const caught_exception_type = ei.get_type();
-  const stackTop = Module.stackSave();
-  const exceptionThrowBuf = Module.stackAlloc(4);
-  Module.HEAP32[exceptionThrowBuf / 4] = ptr;
-  const exc_type_name = Module.demangle(
-    Module.UTF8ToString(Module._exc_typename(caught_exception_type))
+let stderr_chars: number[] = [];
+API.capture_stderr = function () {
+  stderr_chars = [];
+  const FS = Module.FS;
+  FS.createDevice("/dev", "capture_stderr", null, (e: number) =>
+    stderr_chars.push(e),
   );
-  const is_exception_subclass = !!Module.___cxa_can_catch(
-    base_exception_type,
-    caught_exception_type,
-    exceptionThrowBuf
-  );
-  const adjusted_ptr = Module.HEAP32[exceptionThrowBuf / 4];
-  Module.stackRestore(stackTop);
-  return [exc_type_name, is_exception_subclass, adjusted_ptr];
-}
+  FS.closeStream(2 /* stderr */);
+  // open takes the lowest available file descriptor. Since 0 and 1 are occupied by stdin and stdout it takes 2.
+  FS.open("/dev/capture_stderr", 1 /* O_WRONLY */);
+};
 
-function convertCppException(ptr: number): CppException {
-  const [exc_type_name, is_exception_subclass, adjusted_ptr] =
-    cppExceptionInfo(ptr);
-  let msg;
-  if (is_exception_subclass) {
-    // If the ptr inherits from exception, we can use exception.what() to
-    // generate a message
-    const msgPtr = Module._exc_what(adjusted_ptr);
-    msg = Module.UTF8ToString(msgPtr);
-  } else {
-    msg = `The exception is an object of type ${exc_type_name} at address ${ptr} which does not inherit from std::exception`;
+API.restore_stderr = function () {
+  const FS = Module.FS;
+  FS.closeStream(2 /* stderr */);
+  FS.unlink("/dev/capture_stderr");
+  // open takes the lowest available file descriptor. Since 0 and 1 are occupied by stdin and stdout it takes 2.
+  FS.open("/dev/stderr", 1 /* O_WRONLY */);
+  return new TextDecoder().decode(new Uint8Array(stderr_chars));
+};
+
+API.fatal_loading_error = function (...args: string[]) {
+  let message = args.join(" ");
+  if (Module._PyErr_Occurred()) {
+    API.capture_stderr();
+    // Prints traceback to stderr
+    Module._PyErr_Print();
+    const captured_stderr = API.restore_stderr();
+    message += "\n" + captured_stderr;
   }
-  return new CppException(exc_type_name, msg);
-}
-// Expose for testing
-Tests.convertCppException = convertCppException;
+  throw new FatalPyodideError(message);
+};
 
 function isPyodideFrame(frame: ErrorStackParser.StackFrame): boolean {
   if (!frame) {
@@ -271,42 +256,46 @@ Module.handle_js_error = function (e: any) {
 /**
  * A JavaScript error caused by a Python exception.
  *
- * In order to reduce the risk of large memory leaks, the ``PythonError``
+ * In order to reduce the risk of large memory leaks, the :any:`PythonError`
  * contains no reference to the Python exception that caused it. You can find
- * the actual Python exception that caused this error as `sys.last_value
- * <https://docs.python.org/3/library/sys.html#sys.last_value>`_.
+ * the actual Python exception that caused this error as :any:`sys.last_value`.
  *
- * See :ref:`type-translations-errors` for more information.
+ * See :ref:`type translations of errors <type-translations-errors>` for more information.
  *
- * .. admonition:: Avoid Stack Frames
+ * .. admonition:: Avoid leaking stack Frames
  *    :class: warning
  *
- *    If you make a :any:`PyProxy` of ``sys.last_value``, you should be
+ *    If you make a :any:`PyProxy` of :any:`sys.last_value`, you should be
  *    especially careful to :any:`destroy() <PyProxy.destroy>` it when you are
  *    done. You may leak a large amount of memory including the local
  *    variables of all the stack frames in the traceback if you don't. The
  *    easiest way is to only handle the exception in Python.
+ *
+ * @hideconstructor
  */
 export class PythonError extends Error {
-  /**  The address of the error we are wrapping. We may later compare this
+  /**
+   * The address of the error we are wrapping. We may later compare this
    * against sys.last_value.
    * WARNING: we don't own a reference to this pointer, dereferencing it
    * may be a use-after-free error!
    * @private
    */
   __error_address: number;
-
-  constructor(message: string, error_address: number) {
+  /**
+   * The name of the Python error class, e.g, :any:`RuntimeError` or
+   * :any:`KeyError`.
+   */
+  type: string;
+  constructor(type: string, message: string, error_address: number) {
     const oldLimit = Error.stackTraceLimit;
     Error.stackTraceLimit = Infinity;
     super(message);
     Error.stackTraceLimit = oldLimit;
+    this.type = type;
     this.__error_address = error_address;
   }
 }
-Object.defineProperty(PythonError.prototype, "name", {
-  value: PythonError.name,
-});
 API.PythonError = PythonError;
 // A special marker. If we call a CPython API from an EM_JS function and the
 // CPython API sets an error, we might want to return an error status back to
@@ -318,11 +307,55 @@ class _PropagatePythonError extends Error {
     API.fail_test = true;
     super(
       "If you are seeing this message, an internal Pyodide error has " +
-        "occurred. Please report it to the Pyodide maintainers."
+        "occurred. Please report it to the Pyodide maintainers.",
     );
   }
 }
-Object.defineProperty(_PropagatePythonError.prototype, "name", {
-  value: _PropagatePythonError.name,
-});
+function setName(errClass: any) {
+  Object.defineProperty(errClass.prototype, "name", {
+    value: errClass.name,
+  });
+}
+
+class FatalPyodideError extends Error {}
+class Exit extends Error {}
+[_PropagatePythonError, FatalPyodideError, Exit, PythonError].forEach(setName);
+
 Module._PropagatePythonError = _PropagatePythonError;
+
+// Stolen from:
+// https://github.com/sindresorhus/serialize-error/blob/main/error-constructors.js
+API.errorConstructors = new Map(
+  [
+    // Native ES errors https://262.ecma-international.org/12.0/#sec-well-known-intrinsic-objects
+    EvalError,
+    RangeError,
+    ReferenceError,
+    SyntaxError,
+    TypeError,
+    URIError,
+
+    // Built-in errors
+    globalThis.DOMException,
+
+    // Node-specific errors
+    // https://nodejs.org/api/errors.html
+    // @ts-ignore
+    globalThis.AssertionError,
+    // @ts-ignore
+    globalThis.SystemError,
+  ]
+    .filter((x) => x)
+    .map((x) => [x.constructor.name, x]),
+);
+
+API.deserializeError = function (name: string, message: string, stack: string) {
+  const cons = API.errorConstructors.get(name) || Error;
+  const err = new cons(message);
+  if (!API.errorConstructors.has(name)) {
+    err.name = name;
+  }
+  err.message = message;
+  err.stack = stack;
+  return err;
+};

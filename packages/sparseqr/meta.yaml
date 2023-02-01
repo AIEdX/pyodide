@@ -1,6 +1,9 @@
 package:
   name: sparseqr
   version: "1.2"
+  _disabled: true
+  top-level:
+    - sparseqr
 
 source:
   # PyPI release has invalid setup.py (missing cffi modules information) so we use github archive instead.
@@ -15,7 +18,8 @@ requirements:
     - scipy
     - suitesparse
     - distutils
-
+  host:
+    - suitesparse
 build:
   script: |
     # FIXME: We are not dealing with poetry build system correctly.
@@ -23,7 +27,3 @@ build:
     rm -f pyproject.toml
     sed -i "s@include_dirs = \[\]@include_dirs = ['\\${WASM_LIBRARY_DIR}/include']@" sparseqr/sparseqr_gen.py
     sed -i "s@library_dirs = \[\]@library_dirs = ['\\${WASM_LIBRARY_DIR}/lib']@" sparseqr/sparseqr_gen.py
-
-test:
-  imports:
-    - sparseqr
